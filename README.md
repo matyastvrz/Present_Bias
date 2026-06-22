@@ -9,30 +9,13 @@ This is a replication package for my Bachelor's Thesis. The main `beta_code.R` f
 - `beta_code.R` — main analysis script (single-file workflow)
 - `beta_data_cleaned.xlsx` — cleaned dataset used by the analysis
 - `stem_method.R` — script for the stem-based method by Furukawa (2021)
-- `FMA/` — frequentist model averaging utilities (`fma_cluster.R`, `artma_run_fma_cluster`, ...)
+- `FMA/` — frequentist model averaging with clustered standard errors scripts (`fma_cluster.R`, `artma_run_fma_cluster`)
 - `Present_Bias.pdf` — thesis PDF
-- `renv/` — renv project metadata (do not commit library/)
-- `renv.lock` — recorded package versions for the project
-- `.Rprofile` — project R startup config
-- `.gitignore` — repository ignore rules
 - `README.md` — this file
 
 
 ## How to use
 
-Open R or RStudio, set the working directory to the project root, then run:
-
-```r
-setwd("/path/to/Present_Bias")
-source("renv/activate.R")   # enables project library paths
-renv::restore()              # install packages from renv.lock (if needed)
-source("beta_code.R")       # run the full analysis
-```
-
-Or in RStudio: open `Present_Bias.Rproj`, open `beta_code.R`, and click `Source`.
-
-Notes:
-- `renv.lock` captures package versions; restoring it gives the closest reproducible environment.
-- If you prefer not to use `renv`, you can manually install packages used by the script before running it.
-
+1. Install the required packages (see `beta_code.R` for the list of dependencies)
+2. Open and run `beta_code.R` to execute the full analysis
 

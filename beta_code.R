@@ -35,8 +35,7 @@ library(reshape2)
 
 
 # Import dataset 
-setwd("~/Documents/IES/Bachelor's Thesis/Present Bias in Quasi-hyperbolic Discounting")
-df<-read_excel("beta_data.xlsx")
+df<-read_excel("beta_data_cleaned.xlsx")
 
 
 #------------------------------
