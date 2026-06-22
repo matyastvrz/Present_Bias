@@ -1,0 +1,16 @@
+# R artifacts
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+
+# renv cache and library artifacts
+renv/library/
+renv/python/
+renv/staging/
+renv/local/
+renv/cellar/
+renv/sandbox/
+
+# OS files
+.DS_Store

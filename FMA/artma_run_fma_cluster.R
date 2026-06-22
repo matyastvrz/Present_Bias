@@ -1,0 +1,196 @@
+  #' @title Run frequentist model averaging with cluster-robust standard errors
+  #' @param bma_data *\[data.frame\]* Data used for BMA estimation (effect in first column).
+  #' @param bma_model *\[bma\]* BMA model used to order predictors.
+  #' @param input_var_list *\[data.frame\]* Variable metadata with verbose names.
+  #' @param cluster_ids *\[vector, optional\]* Vector of IDs of clusters; required when "clustered = TRUE".
+  #' @param round_to *\[integer, optional\]* Digits for printed output; NULL uses global default.
+  #' @param print_results *\[character\]* One of "none", "fast", "verbose", "all", or "table".
+  #' @param clustered *\[logical\]* If TRUE computes cluster-robust SEs using "cluster_ids", if FALSE computes regular SEs and does not require "cluster_ids".
+  #' @return *\[list\]* List with `coefficients` and `weights`.
+  #' @export
+  run_fma_cluster <- function(bma_data, bma_model, input_var_list, cluster_ids = NULL, round_to = NULL, print_results = "none", clustered = FALSE) {
+  box::use(
+    artma / libs / core / validation[assert, validate]
+  )
+  
+  validate(
+    is.data.frame(bma_data),
+    is.data.frame(input_var_list),
+    inherits(bma_model, "bma"),
+    all(vapply(bma_data, is.numeric, logical(1))),
+    colnames(bma_data)[1] == "effect",
+    print_results %in% c("none", "fast", "verbose", "all"),
+    is.logical(clustered),
+    length(clustered) == 1,
+    !is.na(clustered)
+  )
+  
+  if (isTRUE(clustered)) {
+    validate(
+      !is.null(cluster_ids),
+      length(cluster_ids) == nrow(bma_data),
+      !any(is.na(cluster_ids))
+    )
+    
+    assert(
+      length(unique(cluster_ids)) > 1,
+      "At least two clusters are required for clustered FMA."
+    )
+  }
+  
+  assert(ncol(bma_data) >= 2, "FMA requires at least one predictor variable.")
+  
+  predictors <- resolve_fma_predictors(bma_data, bma_model)
+  x_data <- as.data.frame(bma_data[, predictors, drop = FALSE])
+  x_data <- cbind(`(Intercept)` = rep(1, nrow(x_data)), x_data)
+  
+  scale_vector <- vapply(x_data, function(col) {
+    val <- max(abs(col), na.rm = TRUE)
+    if (!is.finite(val) || val == 0) {
+      return(1)
+    }
+    val
+  }, numeric(1))
+  
+  x <- sweep(as.matrix(x_data), 2, scale_vector, "/")
+  Y <- as.matrix(bma_data[["effect"]])
+  
+  n <- nrow(x)
+  M <- ncol(x)
+  k <- M
+  
+  assert(n > M, "FMA requires more observations than predictors.")
+  
+  full_fit <- stats::lm.fit(x = x, y = Y)
+  beta.full <- as.matrix(stats::coef(full_fit))
+  
+  beta <- matrix(0, nrow = k, ncol = M)
+  e <- matrix(0, nrow = n, ncol = M)
+  k_vector <- matrix(seq_len(M), ncol = 1)
+  var.matrix <- matrix(0, nrow = k, ncol = M)
+  bias.sq <- matrix(0, nrow = k, ncol = M)
+  tol <- sqrt(.Machine$double.eps)
+  
+  cluster_vcov <- function(X, e, cluster) { 
+    cluster <- as.factor(cluster)
+    n <- nrow(X)
+    k <- ncol(X)
+    G <- length(unique(cluster))  
+    dfc <- G / (G - 1) * (n - 1) / (n - k)  
+    u <- X * e 
+    cluster_levels <- levels(cluster)
+    cluster_sum <- matrix(0, nrow = G, ncol = k) 
+    for (j in 1:G) { 
+      cl <- cluster_levels[j]
+      cluster_sum[j, ] <- colSums(u[cluster == cl, , drop = FALSE])
+    }
+    meat <- t(cluster_sum) %*% cluster_sum  
+    bread_inv <- solve(t(X) %*% X)         
+    vcov_cl <- dfc * bread_inv %*% meat %*% bread_inv 
+    return(vcov_cl)
+  }
+  
+  for (i in seq_len(M)) {
+    X <- as.matrix(x[, 1:i, drop = FALSE])
+    ortho <- eigen(crossprod(X), symmetric = TRUE)
+    Q <- ortho$vectors
+    lambda <- ortho$values
+    
+    if (any(lambda < -tol)) {
+      cli::cli_abort("FMA failed: design matrix not positive semidefinite at step {i}.")
+    }
+    lambda_adj <- pmax(lambda, tol)
+    
+    lambda_half <- diag(lambda_adj^-0.5, i, i)
+    x_tilda <- X %*% Q %*% lambda_half
+    beta.star <- t(x_tilda) %*% Y
+    beta.hat <- Q %*% lambda_half %*% beta.star
+    beta[1:i, i] <- beta.hat
+    
+    e_i <- Y - x_tilda %*% beta.star
+    e[, i] <- e_i
+    bias.sq[, i] <- (beta[, i] - beta.full)^2
+    
+    if (isTRUE(clustered)){
+      cl_vcov <- cluster_vcov(X, e_i, cluster_ids)
+      var.matrix[1:i, i] <- diag(cl_vcov)
+      var.matrix[1:i, i] <- var.matrix[1:i, i] + bias.sq[1:i, i] 
+    }else{
+      sigma_i <- as.numeric(crossprod(e_i) / (n - i))
+      var.matrix.star <- diag(sigma_i, i, i)
+      var.matrix.hat <- var.matrix.star %*% (Q %*% diag(lambda_adj^-1, i, i) %*% t(Q))
+      var.matrix[1:i, i] <- diag(var.matrix.hat)
+      var.matrix[, i] <- var.matrix[, i] + bias.sq[, i]
+    }
+    
+  }
+  
+  e_k <- e[, M, drop = FALSE]
+  sigma_hat <- as.numeric(crossprod(e_k) / (n - M))
+  G <- crossprod(e)
+  G <- (G + t(G)) / 2
+  a <- as.numeric((sigma_hat^2) * k_vector)
+  
+  weights <- solve_fma_weights(G, a)
+  
+  beta_scaled <- beta %*% weights
+  final_beta <- as.numeric(beta_scaled / scale_vector)
+  std_scaled <- sqrt(var.matrix) %*% weights
+  final_std <- as.numeric(std_scaled / scale_vector)
+  
+  t_stats <- final_beta / final_std
+  p_values <- stats::pnorm(abs(t_stats), lower.tail = FALSE) * 2
+  p_values[!is.finite(p_values)] <- NA_real_
+  
+  var_names <- colnames(x_data)
+  display_names <- var_names
+  intercept_mask <- var_names %in% c("(Intercept)", "Intercept")
+  display_names[intercept_mask] <- "Intercept"
+  idx <- match(var_names, input_var_list$var_name)
+  display_names[!is.na(idx)] <- input_var_list$var_name_verbose[stats::na.omit(idx)]
+  
+  coefficients <- data.frame(
+    variable = display_names,
+    coefficient = final_beta,
+    se = final_std,
+    p_value = p_values,
+    stringsAsFactors = FALSE
+  )
+  
+  if (print_results != "none") {
+    digits <- round_to
+    if (is.null(digits) || is.na(digits)) {
+      digits <- as.integer(getOption("artma.output.number_of_decimals", 3))
+    }
+    digits <- as.integer(digits)
+    
+    printable <- coefficients
+    printable$coefficient <- round(printable$coefficient, digits)
+    printable$se <- round(printable$se, digits)
+    printable$p_value <- round(printable$p_value, digits)
+    
+    if (print_results == "fast") {
+      cli::cat_print(printable[c("variable", "coefficient", "se")])
+    } else if (print_results %in% c("verbose", "all")) {
+      cli::cat_print(printable[c("variable", "coefficient", "se", "p_value")])
+    }
+    
+    if (print_results %in% c("verbose", "all")) {
+      weights_df <- data.frame(
+        model = seq_along(weights),
+        weight = round(weights, digits),
+        stringsAsFactors = FALSE
+      )
+      cli::cli_h3("FMA model weights")
+      weight_lines <- utils::capture.output(print(weights_df, row.names = FALSE)) # nolint: undesirable_function_linter.
+      cli::cli_verbatim(weight_lines)
+    }
+  }
+  
+  list(
+    coefficients = coefficients,
+    weights = weights
+  )
+  }
+  
+  
